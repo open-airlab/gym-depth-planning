@@ -95,7 +95,7 @@ DEF DEF_VEHICLE Robot {
       name "gyro1"
     }
     InertialUnit {
-      rotation -0.5773502691896258 -0.5773502691896258 -0.5773502691896258 2.0943951023931957
+      rotation 0 -1 0 1.5707963267948968
       name "inertial_unit"
     }
     Transform {

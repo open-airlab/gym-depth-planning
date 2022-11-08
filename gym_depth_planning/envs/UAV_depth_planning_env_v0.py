@@ -38,7 +38,7 @@ class UAVDepthPlanningEnv_v0(gym.Env):
             {'depth_cam': spaces.Box(low=0, high=255, shape=(64, 64, 1), dtype=np.uint8),
              'moving_target': spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64)})
         self.is_discrete_actions = discrete_actions
-        if discrete_actions:
+        if self.is_discrete_actions:
             self.action_space = gym.spaces.Discrete(7)
         else:
             self.action_space = gym.spaces.Box(low=-1, high=+1, shape=(2,), dtype=np.float64)
@@ -71,7 +71,6 @@ class UAVDepthPlanningEnv_v0(gym.Env):
         self.global_traj = Path()
         self.uav_trajectory = Path()
         rospy.Subscriber("/mavros/local_position/pose", PoseStamped, self.pose_callback)
-        # rospy.Subscriber("/range_image_raw", Float32MultiArray, self.range_image_callback)
         rospy.Subscriber("/model_name", String, self.model_name_callback)
         while self.model_name == "":
             self.r.sleep()
@@ -100,7 +99,6 @@ class UAVDepthPlanningEnv_v0(gym.Env):
             print("Service did not process request: " + str(exc))
 
         self.target_y = 0
-        self.target_y_list = [0]  # evaluation map:[-22, -16, -10, -4, 2, 8, 14, 20, 26, 32]
         self.target_z = 2.5
         self.start_x = -10
         self.forward_direction = True
@@ -153,26 +151,34 @@ class UAVDepthPlanningEnv_v0(gym.Env):
         # if self.current_position == PoseStamped().pose.position:
         #     rospy.loginfo("Gym environment is not reading mavros position")
         #     return self.observation_space.sample(), np.random.random(1), False, {}
+        # encode the action
         if self.is_discrete_actions:
             action = self.action_dictionary[action]
         forward_step = np.cos(action[0] * 22.5 / 180 * np.pi)
         side_step = np.sin(action[0] * 22.5 / 180 * np.pi)
         yaw_step = action[1] * 22.5 / 180 * np.pi
 
+        # take the step
         prev_x = self.current_position.x
         if self.forward_direction:
+            yaw = self.current_yaw + yaw_step
+            if yaw > np.pi / 2:
+                yaw = np.pi / 2
+            if yaw < -np.pi / 2:
+                yaw = -np.pi / 2
             self.go_position(
                 self.current_position.x + forward_step * np.cos(self.current_yaw) - side_step * np.sin(self.current_yaw),
                 self.current_position.y + forward_step * np.sin(self.current_yaw) + side_step * np.cos(self.current_yaw),
-                self.target_z, yaw=self.current_yaw + yaw_step,
+                self.target_z, yaw=yaw,
                 check_collision=True)
-        else:  # TODO: change current yaw parts
+        else:
+            yaw = self.current_yaw + yaw_step
+            if np.abs(yaw) < np.pi / 2:
+                yaw = np.sign(yaw) * np.pi / 2
             self.go_position(
-                self.current_position.x - forward_step * np.cos(
-                    self.current_yaw * 22.5 / 180 * np.pi) + side_step * np.sin(self.current_yaw * 22.5 / 180 * np.pi),
-                self.current_position.y - forward_step * np.sin(
-                    self.current_yaw * 22.5 / 180 * np.pi) - side_step * np.cos(self.current_yaw * 22.5 / 180 * np.pi),
-                self.target_z, yaw=self.current_yaw + yaw_step,
+                self.current_position.x + forward_step * np.cos(self.current_yaw) - side_step * np.sin(self.current_yaw),
+                self.current_position.y + forward_step * np.sin(self.current_yaw) + side_step * np.cos(self.current_yaw),
+                self.target_z, yaw=yaw,
                 check_collision=True)
         self.update_trajectory()
 
@@ -181,12 +187,15 @@ class UAVDepthPlanningEnv_v0(gym.Env):
         dx = np.abs(self.current_position.x - prev_x)
         dy = np.abs(self.current_position.y - self.target_position.y)
         dyaw = np.abs(self.current_yaw)
-        reward = 2 * dx - 0.4 * dy - 0.3 * dyaw  # TODO: yaw reward should be upscaled by ~4/1.57
+
+        # calculate reward
+        reward = 2 * dx - 0.4 * dy - 0.3 * dyaw
         if self.enable_safety_reward:
             if self.safety2_flag:
                 reward -= 2
             if self.safety1_flag:
                 reward -= 10
+
         # set new observation
         if self.forward_direction:
             self.set_target()
@@ -197,20 +206,17 @@ class UAVDepthPlanningEnv_v0(gym.Env):
             self.observation = {'depth_cam': np.copy(self.range_image),
                                 'moving_target': np.copy(self.vector_observation)}
             finish_passed = (self.current_position.x > self.parkour_length + self.start_x)
-        else:  # TODO: change current yaw parts
+        else:
             self.set_target()
             vo = self.difference_between_points(self.current_position, self.target_position)
-            self.vector_observation = np.array([vo[0] * np.cos(self.current_yaw * 22.5 / 180 * np.pi) + vo[1] * np.sin(
-                self.current_yaw * 22.5 / 180 * np.pi),
-                                                -vo[0] * np.sin(self.current_yaw * 22.5 / 180 * np.pi) + vo[1] * np.cos(
-                                                    self.current_yaw * 22.5 / 180 * np.pi),
+            self.vector_observation = np.array([vo[0] * np.cos(self.current_yaw+np.pi) + vo[1] * np.sin(self.current_yaw+np.pi),
+                                                -vo[0] * np.sin(self.current_yaw+np.pi) + vo[1] * np.cos(self.current_yaw+np.pi),
                                                 vo[2]])
             self.observation = {'depth_cam': np.copy(self.range_image),
                                 'moving_target': np.copy(self.vector_observation)}
             finish_passed = (self.current_position.x < self.start_x - self.parkour_length)
-        # plt.imshow(self.range_image, cmap='gray')
-        # plt.show()
-        # check done and calculate reward
+
+        # check done and update reward
         if finish_passed:
             reward = 20
             done = True
@@ -227,22 +233,20 @@ class UAVDepthPlanningEnv_v0(gym.Env):
                 "safety_flags": [self.safety1_flag, self.safety2_flag], "closer_object": self.closer_object_length}
         self.safety1_flag = False
         self.safety2_flag = False
-        # np.save("depth_data2/im"+str(self.image_count), self.range_image)
-        # self.image_count += 1
         return self.observation, reward, done, info
 
     def reset(self):
         if self.current_position == PoseStamped().pose.position:
             rospy.loginfo("Gym environment is not reading mavros position")
             return self.observation_space.sample()
-        self.target_y = np.random.choice(self.target_y_list)
         if self.no_dynamics:
-            self.go_position(self.start_x, self.target_y + np.random.uniform(-0.5, 0.5), self.target_z)
+            self.go_position(self.start_x, self.target_y + np.random.uniform(-0.5, 0.5), self.target_z, yaw=(1-self.forward_direction)*np.pi)
         else:
             self.go_position(self.current_position.x, self.current_position.y, 8)
             self.go_position(self.start_x, self.current_position.y, 8)
             self.go_position(self.start_x, self.target_y, 8)
             self.go_position(self.start_x, self.target_y + np.random.uniform(-0.5, 0.5), self.target_z)
+        self.r.sleep()
         self.uav_trajectory.header.frame_id = "map"
         self.update_trajectory()
         self.publish_global_trajectory()
@@ -310,14 +314,10 @@ class UAVDepthPlanningEnv_v0(gym.Env):
 
     def imu_callback(self, data):  # for no dynamics
         self.current_orientation = data.orientation
-        self.current_yaw = euler_from_quaternion(data.orientation)["pitch"]
+        self.current_yaw = euler_from_quaternion(data.orientation)["roll"]
 
     def go_position(self, x, y, z, yaw=0, check_collision=False):
         if self.no_dynamics:
-            if yaw > np.pi / 2:
-                yaw = np.pi / 2
-            if yaw < -np.pi / 2:
-                yaw = -np.pi / 2
             goal = PoseStamped()
 
             goal.header.seq = 1
@@ -328,7 +328,7 @@ class UAVDepthPlanningEnv_v0(gym.Env):
             goal.pose.position.y = z
             goal.pose.position.z = x
 
-            goal.pose.orientation = euler_to_quaternion(0 + np.random.uniform(-0.05, 0.05), yaw + np.random.uniform(-0.05, 0.05), 0 + np.random.uniform(-0.05, 0.05))
+            # goal.pose.orientation = euler_to_quaternion(0 + np.random.uniform(-0.05, 0.05), yaw + np.random.uniform(-0.05, 0.05), 0 + np.random.uniform(-0.05, 0.05))
             goal.pose.orientation = euler_to_quaternion(0, yaw, 0)
             try:
                 self.ros_srv_field_set_v3(self.robot_translation_field, 0, goal.pose.position)
@@ -337,10 +337,6 @@ class UAVDepthPlanningEnv_v0(gym.Env):
             except rospy.ServiceException as exc:
                 print("Service did not process request: " + str(exc))
         else:
-            if yaw > np.pi / 2:
-                yaw = np.pi / 2
-            if yaw < -np.pi / 2:
-                yaw = -np.pi / 2
             goal = PoseStamped()
 
             goal.header.seq = 1
