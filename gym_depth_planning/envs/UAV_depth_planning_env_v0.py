@@ -22,7 +22,6 @@ from std_msgs.msg import Float32MultiArray, String
 from nav_msgs.msg import Path
 from webots_ros.msg import BoolStamped
 from sensor_msgs.msg import Imu, Image, LaserScan
-from matplotlib import pyplot as plt
 from gym_depth_planning.utils.obstacle_randomizer import ObstacleRandomizer
 from gym_depth_planning.utils.euler_quaternion_transformations import euler_from_quaternion, euler_to_quaternion
 
